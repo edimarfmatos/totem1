@@ -3,10 +3,10 @@ const WebSocket = require('ws');
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocket.Server({ port: PORT });
 
-// Armazenamento em memória do estado dos totens (preserva nome e configurações)
+// Estado global mantido na memória do servidor
 const totems = {};
 const admins = new Set();
-const totemSockets = new Map(); // Mapeia totemId -> WebSocket
+const totemSockets = new Map();
 
 wss.on('connection', (ws) => {
   let clientType = null;
@@ -16,32 +16,39 @@ wss.on('connection', (ws) => {
     try {
       const data = JSON.parse(message);
 
-      // 1. Registro do Painel Administrativo
+      // 1. REGISTRO DO PAINEL ADMINISTRATIVO
       if (data.type === 'register_admin') {
         clientType = 'admin';
         admins.add(ws);
-
-        // Envia o estado consolidado com todos os totens cadastrados e seus status atuais
+        
+        // Envia o estado completo de todos os totems cadastrados
         ws.send(JSON.stringify({ type: 'init', totems }));
         return;
       }
 
-      // 2. Registro / Reconexão do Totem
+      // 2. REGISTRO / RECONEXÃO DO TOTEM
       if (data.type === 'register_totem' || data.totemId || data.id) {
         clientType = 'totem';
         currentTotemId = data.totemId || data.id;
 
         totemSockets.set(currentTotemId, ws);
 
-        // Preserva dados anteriores (como nome customizado) e atualiza o status para 'online'
+        // Mescla dados antigos (nome, imagens, vídeos, rodapé) com os novos dados de conexão
         totems[currentTotemId] = {
           ...(totems[currentTotemId] || {}),
-          id: currentTotemId,
           ...data,
+          id: currentTotemId,
           status: 'online'
         };
 
-        // Notifica todos os administradores conectados
+        // ENVIAR DE VOLTA AO TOTEM: Devolve todas as configurações salvas (mídia/rodapé)
+        // para que a tela do totem restaure tudo automaticamente ao ligar
+        ws.send(JSON.stringify({
+          type: 'restore_state',
+          ...totems[currentTotemId]
+        }));
+
+        // Notifica o painel administrativo que o totem ficou online com seus dados atualizados
         broadcastToAdmins({
           type: 'totem_connected',
           totemId: currentTotemId,
@@ -51,24 +58,25 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // 3. Comandos enviados do Painel Admin para o Totem
-      if (data.type === 'totem_command' && data.totemId) {
-        const id = data.totemId;
+      // 3. COMANDOS E ATUALIZAÇÕES DO PAINEL ADMIN PARA OS TOTENS
+      // Aceita comandos genéricos, envio de imagens, vídeos, rodapés e orientações
+      if (currentTotemId || data.totemId) {
+        const id = data.totemId || currentTotemId;
 
-        // Atualiza e persiste as informações enviadas pelo admin (ex: nome, mídia, orientação)
+        // Atualiza a memória mantendo tudo o que já existia (nome, status, etc.)
         totems[id] = {
           ...(totems[id] || {}),
           ...data,
           status: totems[id]?.status || 'online'
         };
 
-        // Repassa a instrução diretamente para a tela do totem, se estiver ativa
+        // Repassa o comando exato recebido para a tela do totem alvo
         const targetSocket = totemSockets.get(id);
         if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-          targetSocket.send(JSON.stringify(data));
+          targetSocket.send(JSON.stringify(totems[id]));
         }
 
-        // Transmite o estado atualizado do totem para os painéis administrativos
+        // Atualiza os painéis administradores em tempo real
         broadcastToAdmins({
           type: 'totem_updated',
           totemId: id,
@@ -80,19 +88,19 @@ wss.on('connection', (ws) => {
     }
   });
 
-  // Evento disparado quando uma conexão cai ou é fechada
+  // 4. TRATAMENTO DE DESCONEXÃO
   ws.on('close', () => {
     if (clientType === 'admin') {
       admins.delete(ws);
     } else if (clientType === 'totem' && currentTotemId) {
       totemSockets.delete(currentTotemId);
 
-      // Altera o status para offline mantendo o nome e outras configurações salvas
+      // Marca como offline, mas PRESERVA nome, imagem, vídeo e rodapé
       if (totems[currentTotemId]) {
         totems[currentTotemId].status = 'offline';
       }
 
-      // Avisa os painéis administrativos sobre a queda de conexão do totem
+      // Notifica o painel admin sobre a queda de sinal
       broadcastToAdmins({
         type: 'totem_disconnected',
         totemId: currentTotemId,
@@ -103,7 +111,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Função para transmitir mensagens para todos os painéis administrativos conectados
 function broadcastToAdmins(payload) {
   const message = JSON.stringify(payload);
   admins.forEach((adminWs) => {
