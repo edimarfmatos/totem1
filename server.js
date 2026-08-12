@@ -1,38 +1,120 @@
 const WebSocket = require('ws');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
-// Porta do Servidor (definida automaticamente pelo Render ou 8080 localmente)
 const PORT = process.env.PORT || 8080;
+const DB_FILE = path.join(__dirname, 'totems_db.json');
 
-// Servidor HTTP básico
+// Servidor HTTP para servir arquivos estáticos (Player e Admin)
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('Servidor WebSocket para Gestão de Totens rodando perfeitamente!');
+  let filePath = '';
+
+  if (req.url === '/' || req.url === '/player') {
+    filePath = path.join(__dirname, 'index.html');
+  } else if (req.url === '/admin') {
+    filePath = path.join(__dirname, 'admin.html');
+  } else {
+    filePath = path.join(__dirname, req.url);
+  }
+
+  const extname = String(path.extname(filePath)).toLowerCase();
+  const mimeTypes = {
+    '.html': 'text/html',
+    '.js': 'text/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml'
+  };
+
+  const contentType = mimeTypes[extname] || 'text/html';
+
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      if (error.code === 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<h1>404 - Página Não Encontrada</h1>', 'utf-8');
+      } else {
+        res.writeHead(500);
+        res.end(`Erro no servidor: ${error.code}`);
+      }
+    } else {
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(content, 'utf-8');
+    }
+  });
 });
 
 // Instância do WebSocket Server
 const wss = new WebSocket.Server({ server });
 
-// Armazenamento em memória do estado dos Totens e Administradores
+// Armazenamento do estado dos Totens e Administradores
 const totems = {};
-const adminSockets = new Set(); // Suporta múltiplos painéis de administração abertos
+const adminSockets = new Set();
 
-// Gerador de ID único para conexões de totens
+/* =========================================================
+   SISTEMA DE PERSISTÊNCIA EM ARQUIVO (BANCO DE DADOS LOCAL)
+========================================================= */
+function loadDatabase() {
+  if (fs.existsSync(DB_FILE)) {
+    try {
+      const data = fs.readFileSync(DB_FILE, 'utf8');
+      const savedTotems = JSON.parse(data);
+      
+      Object.keys(savedTotems).forEach((id) => {
+        totems[id] = {
+          ...savedTotems[id],
+          online: false, // Inicia offline até conectar
+          ws: null
+        };
+      });
+      console.log('Banco de dados carregado: Totens restaurados com sucesso.');
+    } catch (e) {
+      console.error('Erro ao ler banco de dados local:', e);
+    }
+  }
+}
+
+function saveDatabase() {
+  try {
+    const dataToSave = {};
+    Object.keys(totems).forEach((id) => {
+      // Removemos a conexão WebSocket (ws) para salvar apenas os dados
+      const { ws, online, ...rest } = totems[id];
+      dataToSave[id] = rest;
+    });
+    fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Erro ao salvar banco de dados local:', e);
+  }
+}
+
+// Carrega os dados salvos assim que o servidor inicia
+loadDatabase();
+
 function generateUniqueId() {
   return 'totem_' + Math.random().toString(36).substr(2, 9);
 }
 
-// Transmitir lista atualizada de totens para todos os Painéis Administrativos conectados
+// Transmitir lista atualizada de totens para todos os Painéis Administrativos
 function notifyAdminTotemList() {
   const totemList = {};
   Object.keys(totems).forEach((id) => {
     totemList[id] = {
       id: id,
-      storeName: totems[id].storeName,
+      name: totems[id].name || totems[id].storeName || id,
+      storeName: totems[id].storeName || totems[id].name || 'Novo Totem',
       configured: totems[id].configured,
       online: totems[id].online,
-      orientation: totems[id].orientation,
-      lastCommands: totems[id].lastCommands || {} // Mantém histórico de mídias/rodapé
+      orientation: totems[id].orientation || 'portrait',
+      mediaType: totems[id].mediaType || 'image',
+      mediaUrl: totems[id].mediaUrl || '',
+      tickerText: totems[id].tickerText || '',
+      tickerIcon: totems[id].tickerIcon || '',
+      lastCommands: totems[id].lastCommands || {}
     };
   });
 
@@ -49,7 +131,7 @@ function notifyAdminTotemList() {
 }
 
 /* =========================================================
-   SISTEMA DE HEARTBEAT (Manter conexão viva em nuvem)
+   HEARTBEAT
 ========================================================= */
 function noop() {}
 
@@ -71,16 +153,14 @@ wss.on('close', () => {
 });
 
 /* =========================================================
-   GERENCIAMENTO DE CONEXÕES E MENSAGENS
+   GERENCIAMENTO DE CONEXÕES
 ========================================================= */
 wss.on('connection', (ws) => {
   ws.isAlive = true;
   ws.on('pong', heartbeat);
 
-  let clientType = null; // 'totem' ou 'admin'
+  let clientType = null;
   let clientId = null;
-
-  console.log('Nova conexão estabelecida.');
 
   ws.on('message', (message) => {
     try {
@@ -96,29 +176,32 @@ wss.on('connection', (ws) => {
           notifyAdminTotemList();
           break;
 
-        /* 2. REGISTRO / RECONEXÃO DO TOTEM (TV / TV BOX) */
+        /* 2. REGISTRO / RECONEXÃO DO TOTEM */
         case 'register_totem':
           clientType = 'totem';
           clientId = data.totemId || generateUniqueId();
 
           const existingTotem = totems[clientId] || {};
-          const isConfigured = Boolean(
-            data.storeName && data.storeName !== 'Loja Não Configurada'
-          ) || (existingTotem.configured || false);
 
-          // Preserva as mídias e configurações antigas se o totem caiu e voltou
           totems[clientId] = {
             ...existingTotem,
             id: clientId,
             ws: ws,
-            storeName: data.storeName || existingTotem.storeName || 'Novo Totem (Sem Nome)',
-            configured: isConfigured,
+            name: existingTotem.name || existingTotem.storeName || data.storeName || 'Novo Totem',
+            storeName: existingTotem.storeName || existingTotem.name || data.storeName || 'Novo Totem',
+            configured: true,
             online: true,
-            orientation: data.orientation || existingTotem.orientation || 'portrait',
+            orientation: existingTotem.orientation || data.orientation || 'portrait',
+            mediaType: existingTotem.mediaType || 'image',
+            mediaUrl: existingTotem.mediaUrl || '',
+            tickerText: existingTotem.tickerText || '',
+            tickerIcon: existingTotem.tickerIcon || '',
             lastCommands: existingTotem.lastCommands || {}
           };
 
-          console.log(`Totem registrado: ID [${clientId}] - Nome: "${totems[clientId].storeName}"`);
+          console.log(`Totem conectado: ID [${clientId}] - Nome: "${totems[clientId].name}"`);
+
+          saveDatabase();
 
           // Responde ao totem confirmando seu ID
           ws.send(JSON.stringify({
@@ -126,7 +209,7 @@ wss.on('connection', (ws) => {
             totemId: clientId
           }));
 
-          // REFORÇO: Restaura na tela do totem as mídias/rodapé/orientação salvas
+          // Restaura na tela do totem as mídias e orientações salvas
           if (totems[clientId].lastCommands) {
             Object.values(totems[clientId].lastCommands).forEach((cmdData) => {
               if (ws.readyState === WebSocket.OPEN) {
@@ -136,66 +219,41 @@ wss.on('connection', (ws) => {
           }
 
           notifyAdminTotemList();
-
-          // Notifica painel se for um totem pendente de configuração
-          if (!isConfigured) {
-            adminSockets.forEach((adminWs) => {
-              if (adminWs.readyState === WebSocket.OPEN) {
-                adminWs.send(JSON.stringify({
-                  type: 'new_totem_pending',
-                  totemId: clientId
-                }));
-              }
-            });
-          }
           break;
 
-        /* 3. CONFIGURAÇÃO INICIAL DO TOTEM (NOME DA LOJA) */
-        case 'configure_totem':
-          if (clientType === 'admin' && totems[data.totemId]) {
-            const targetTotem = totems[data.totemId];
-            targetTotem.storeName = data.storeName;
-            targetTotem.configured = true;
-
-            const nameCmd = {
-              command: 'set_store_name',
-              name: data.storeName
-            };
-
-            targetTotem.lastCommands['set_store_name'] = nameCmd;
-
-            if (targetTotem.ws && targetTotem.ws.readyState === WebSocket.OPEN) {
-              targetTotem.ws.send(JSON.stringify(nameCmd));
-            }
-
-            console.log(`Totem ${data.totemId} configurado com o nome: ${data.storeName}`);
-            notifyAdminTotemList();
-          }
-          break;
-
-        /* 4. COMANDOS DO PAINEL ENVIADOS PARA O TOTEM (IMAGEM, VÍDEO, RODAPÉ, ORIENTAÇÃO) */
+        /* 3. COMANDOS DO PAINEL ENVIADOS PARA O TOTEM */
         case 'totem_command':
           if (clientType === 'admin' && totems[data.totemId]) {
             const targetTotem = totems[data.totemId];
 
-            // Atualiza estados específicos no objeto do totem
-            if (data.command === 'set_store_name') {
-              targetTotem.storeName = data.name || data.storeName;
+            // Atualiza os dados no cadastro do totem
+            if (data.name) {
+              targetTotem.name = data.name;
+              targetTotem.storeName = data.name;
             }
-            if (data.command === 'set_orientation' || data.orientation) {
-              targetTotem.orientation = data.orientation || targetTotem.orientation;
+            if (data.orientation) {
+              targetTotem.orientation = data.orientation;
+            }
+            if (data.mediaUrl !== undefined) {
+              targetTotem.mediaUrl = data.mediaUrl;
+              targetTotem.mediaType = data.mediaType || targetTotem.mediaType;
+            }
+            if (data.tickerText !== undefined) {
+              targetTotem.tickerText = data.tickerText;
+              targetTotem.tickerIcon = data.tickerIcon || '';
             }
 
-            // Salva o último comando enviado do tipo (ex: imagem, vídeo, rodapé) para reidratar se o totem reiniciar
-            const commandKey = data.command || data.action || 'generic_command';
+            // Guarda histórico dos últimos comandos
+            const commandKey = data.command || data.action || (data.mediaUrl ? 'media' : data.tickerText ? 'ticker' : data.orientation ? 'orientation' : 'name');
             targetTotem.lastCommands[commandKey] = data;
 
-            // Envia o comando em tempo real para a tela do totem se estiver online
+            // Salva as alterações no arquivo de banco de dados
+            saveDatabase();
+
+            // Envia o comando em tempo real se o totem estiver online
             if (targetTotem.ws && targetTotem.ws.readyState === WebSocket.OPEN) {
               targetTotem.ws.send(JSON.stringify(data));
-              console.log(`Comando "${commandKey}" enviado com sucesso para o totem: ${data.totemId}`);
-            } else {
-              console.warn(`Comando "${commandKey}" salvo. Totem offline no momento: ${data.totemId}`);
+              console.log(`Comando enviado para o totem: ${data.totemId}`);
             }
 
             notifyAdminTotemList();
@@ -215,10 +273,9 @@ wss.on('connection', (ws) => {
     if (clientType === 'totem' && clientId && totems[clientId]) {
       console.log(`Totem desconectado: ${clientId}`);
       totems[clientId].online = false;
-      totems[clientId].ws = null; // Libera a referência do socket
+      totems[clientId].ws = null;
       notifyAdminTotemList();
     } else if (clientType === 'admin') {
-      console.log('Painel Administrativo desconectado.');
       adminSockets.delete(ws);
     }
   });
@@ -228,10 +285,9 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Inicialização do Servidor HTTP / WebSocket
 server.listen(PORT, () => {
   console.log(`===================================================`);
   console.log(` Servidor Totem Mídia rodando na porta: ${PORT}`);
-  console.log(` WebSocket pronto para receber conexões!`);
+  console.log(` Banco de dados local ativo!`);
   console.log(`===================================================`);
 });
