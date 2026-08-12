@@ -6,51 +6,6 @@ const path = require('path');
 const PORT = process.env.PORT || 8080;
 const DB_FILE = path.join(__dirname, 'totems_db.json');
 
-// Servidor HTTP para servir arquivos estáticos (Player e Admin)
-const server = http.createServer((req, res) => {
-  let filePath = '';
-
-  if (req.url === '/' || req.url === '/player') {
-    filePath = path.join(__dirname, 'index.html');
-  } else if (req.url === '/admin') {
-    filePath = path.join(__dirname, 'admin.html');
-  } else {
-    filePath = path.join(__dirname, req.url);
-  }
-
-  const extname = String(path.extname(filePath)).toLowerCase();
-  const mimeTypes = {
-    '.html': 'text/html',
-    '.js': 'text/javascript',
-    '.css': 'text/css',
-    '.json': 'application/json',
-    '.png': 'image/png',
-    '.jpg': 'image/jpg',
-    '.gif': 'image/gif',
-    '.svg': 'image/svg+xml'
-  };
-
-  const contentType = mimeTypes[extname] || 'text/html';
-
-  fs.readFile(filePath, (error, content) => {
-    if (error) {
-      if (error.code === 'ENOENT') {
-        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end('<h1>404 - Página Não Encontrada</h1>', 'utf-8');
-      } else {
-        res.writeHead(500);
-        res.end(`Erro no servidor: ${error.code}`);
-      }
-    } else {
-      res.writeHead(200, { 'Content-Type': contentType });
-      res.end(content, 'utf-8');
-    }
-  });
-});
-
-// Instância do WebSocket Server
-const wss = new WebSocket.Server({ server });
-
 // Armazenamento do estado dos Totens e Administradores
 const totems = {};
 const adminSockets = new Set();
@@ -130,6 +85,60 @@ function notifyAdminTotemList() {
   });
 }
 
+// Servidor HTTP para servir arquivos estáticos e Rotas API
+const server = http.createServer((req, res) => {
+  // Suporte a API HTTP para consulta de dados salvos
+  if (req.url === '/api/totems' || req.url === '/api/dados') {
+    res.writeHead(200, { 
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    return res.end(JSON.stringify(totems), 'utf-8');
+  }
+
+  let filePath = '';
+
+  if (req.url === '/' || req.url === '/player') {
+    filePath = path.join(__dirname, 'index.html');
+  } else if (req.url === '/admin') {
+    filePath = path.join(__dirname, 'admin.html');
+  } else {
+    filePath = path.join(__dirname, req.url);
+  }
+
+  const extname = String(path.extname(filePath)).toLowerCase();
+  const mimeTypes = {
+    '.html': 'text/html',
+    '.js': 'text/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml'
+  };
+
+  const contentType = mimeTypes[extname] || 'text/html';
+
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      if (error.code === 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<h1>404 - Página Não Encontrada</h1>', 'utf-8');
+      } else {
+        res.writeHead(500);
+        res.end(`Erro no servidor: ${error.code}`);
+      }
+    } else {
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(content, 'utf-8');
+    }
+  });
+});
+
+// Instância do WebSocket Server
+const wss = new WebSocket.Server({ server });
+
 /* =========================================================
    HEARTBEAT
 ========================================================= */
@@ -203,13 +212,14 @@ wss.on('connection', (ws) => {
 
           saveDatabase();
 
-          // Responde ao totem confirmando seu ID
+          // Responde ao totem confirmando seu ID e enviando o estado completo
           ws.send(JSON.stringify({
             type: 'totem_registered',
-            totemId: clientId
+            totemId: clientId,
+            state: totems[clientId]
           }));
 
-          // Restaura na tela do totem as mídias e orientações salvas
+          // Restaura na tela do totem as mídias e comandos salvos
           if (totems[clientId].lastCommands) {
             Object.values(totems[clientId].lastCommands).forEach((cmdData) => {
               if (ws.readyState === WebSocket.OPEN) {
@@ -244,10 +254,10 @@ wss.on('connection', (ws) => {
             }
 
             // Guarda histórico dos últimos comandos
-            const commandKey = data.command || data.action || (data.mediaUrl ? 'media' : data.tickerText ? 'ticker' : data.orientation ? 'orientation' : 'name');
+            const commandKey = data.command || data.action || (data.mediaUrl !== undefined ? 'media' : data.tickerText !== undefined ? 'ticker' : data.orientation ? 'orientation' : 'name');
             targetTotem.lastCommands[commandKey] = data;
 
-            // Salva as alterações no arquivo de banco de dados
+            // Salva as alterações no arquivo de banco de dados imediatamente
             saveDatabase();
 
             // Envia o comando em tempo real se o totem estiver online
