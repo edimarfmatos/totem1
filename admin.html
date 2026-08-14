@@ -139,11 +139,17 @@
       color: #475569;
     }
 
-    input, select, button {
+    input, select, textarea, button {
       padding: 10px;
       border-radius: 6px;
       border: 1px solid #cbd5e1;
       font-size: 1rem;
+      font-family: inherit;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 90px;
     }
 
     button {
@@ -172,10 +178,23 @@
       background-color: #475569;
     }
 
+    .btn-danger {
+      background-color: #ef4444;
+    }
+
+    .btn-danger:hover {
+      background-color: #dc2626;
+    }
+
     #totem-info {
       font-size: 0.95rem;
       color: #64748b;
       margin-bottom: 15px;
+    }
+
+    .field-hint {
+      font-size: 0.8rem;
+      color: #64748b;
     }
   </style>
 </head>
@@ -202,25 +221,31 @@
           <button id="btn-save-name">Salvar Nome</button>
         </div>
       </div>
+
+      <!-- BOTÃO DE EXCLUIR TOTEM -->
+      <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #f1f5f9; display: flex; justify-content: flex-end;">
+        <button id="btn-delete-totem" class="btn-danger" style="font-size: 0.85rem; padding: 8px 14px;">🗑️ Excluir Totem do Sistema</button>
+      </div>
     </div>
 
     <div class="card">
-      <h3>Exibição de Mídia</h3>
+      <h3>Exibição de Mídia / Playlist</h3>
       <div class="form-group">
         <label for="media-type">Tipo de Mídia:</label>
         <select id="media-type">
           <option value="image">Imagem (URL)</option>
-          <option value="video">Vídeo (URL)</option>
+          <option value="video">Vídeo / Playlist de Vídeos (URL)</option>
           <option value="iframe">Página Web (iFrame / URL)</option>
         </select>
       </div>
 
       <div class="form-group">
-        <label for="media-url">URL do Conteúdo:</label>
-        <input type="url" id="media-url" placeholder="https://exemplo.com/midia.jpg">
+        <label for="media-url">URL(s) do Conteúdo:</label>
+        <textarea id="media-url" placeholder="Insira a URL aqui. Para criar uma PLAYLIST de vídeos, cole um link por linha..."></textarea>
+        <span class="field-hint">💡 Dica: Para criar uma playlist, cole os links de vídeo um embaixo do outro (um por linha).</span>
       </div>
 
-      <button id="btn-send-media">Atualizar Mídia</button>
+      <button id="btn-send-media">Atualizar Mídia / Playlist</button>
     </div>
 
     <div class="card">
@@ -252,7 +277,7 @@
     const SERVER_URL = "wss://totem1.onrender.com";
     let socket;
     let selectedTotemId = null;
-    const totens = {};
+    let totens = {};
 
     function connectWebSocket() {
       socket = new WebSocket(SERVER_URL);
@@ -277,15 +302,15 @@
     }
 
     function handleServerMessage(data) {
-      // 1. Recebeu mapa/lista de totens ativos do servidor
+      // 1. Recebeu lista completa de totens do servidor
       if (data.totems) {
+        totens = {}; // Reseta lista local para refletir o estado real do servidor
         Object.keys(data.totems).forEach(id => {
           const item = data.totems[id];
           const isOffline = item.status === "offline" || item.status === "disconnected" || item.online === false;
           const currentStatus = isOffline ? "offline" : "online";
 
           totens[id] = {
-            ...(totens[id] || {}),
             ...item,
             status: currentStatus
           };
@@ -308,6 +333,9 @@
 
       if (selectedTotemId && totens[selectedTotemId]) {
         populateFormForSelectedTotem();
+      } else if (selectedTotemId && !totens[selectedTotemId]) {
+        // Se o totem selecionado foi excluído, reseta a seleção
+        resetSelection();
       }
     }
 
@@ -317,7 +345,7 @@
 
       Object.keys(totens).forEach(id => {
         const totem = totens[id];
-        const displayName = totem.name || id;
+        const displayName = totem.name || totem.storeName || id;
         const orientationLabel = totem.orientation === "landscape" ? "📺 Paisagem" : "📱 Retrato";
         const isOnline = totem.status === "online";
         const statusClass = isOnline ? "online" : "offline";
@@ -348,11 +376,25 @@
       populateFormForSelectedTotem();
     }
 
+    function resetSelection() {
+      selectedTotemId = null;
+      document.getElementById("selected-totem-title").innerText = "Selecione um Totem";
+      document.getElementById("selected-totem-status-badge").innerText = "";
+      document.getElementById("selected-totem-status-badge").className = "";
+      document.getElementById("totem-info").innerText = "Nenhum totem selecionado no momento.";
+      document.getElementById("totem-name-input").value = "";
+      document.getElementById("media-type").value = "image";
+      document.getElementById("media-url").value = "";
+      document.getElementById("ticker-text").value = "";
+      document.getElementById("ticker-icon").value = "";
+      renderTotemList();
+    }
+
     function populateFormForSelectedTotem() {
       if (!selectedTotemId || !totens[selectedTotemId]) return;
 
       const totem = totens[selectedTotemId];
-      const displayName = totem.name || selectedTotemId;
+      const displayName = totem.name || totem.storeName || selectedTotemId;
       const isOnline = totem.status === "online";
 
       document.getElementById("selected-totem-title").innerText = `Totem: ${displayName}`;
@@ -364,7 +406,7 @@
       document.getElementById("totem-info").innerText = 
         `ID: ${selectedTotemId} | Estado: ${isOnline ? 'Conectado' : 'Desconectado'} | Orientação: ${totem.orientation || 'portrait'}`;
 
-      document.getElementById("totem-name-input").value = totem.name || "";
+      document.getElementById("totem-name-input").value = totem.name || totem.storeName || "";
       document.getElementById("media-type").value = totem.mediaType || "image";
       document.getElementById("media-url").value = totem.mediaUrl || "";
       document.getElementById("ticker-text").value = totem.tickerText || "";
@@ -393,6 +435,7 @@
       }
     }
 
+    // AÇÕES DOS BOTÕES
     document.getElementById("btn-save-name").onclick = () => {
       const newName = document.getElementById("totem-name-input").value.trim();
       if (!newName) return alert("Digite um nome válido para o totem.");
@@ -401,8 +444,8 @@
 
     document.getElementById("btn-send-media").onclick = () => {
       const type = document.getElementById("media-type").value;
-      const url = document.getElementById("media-url").value;
-      if (!url) return alert("Insira uma URL válida.");
+      const url = document.getElementById("media-url").value.trim();
+      if (!url) return alert("Insira pelo menos uma URL válida.");
       sendCommand({ mediaType: type, mediaUrl: url });
     };
 
@@ -418,6 +461,28 @@
 
     document.getElementById("btn-landscape").onclick = () => {
       sendCommand({ orientation: "landscape" });
+    };
+
+    // BOTÃO EXCLUIR TOTEM
+    document.getElementById("btn-delete-totem").onclick = () => {
+      if (!selectedTotemId) {
+        return alert("Selecione um totem na lista para poder excluí-lo.");
+      }
+
+      const totem = totens[selectedTotemId];
+      const name = totem ? (totem.name || totem.storeName || selectedTotemId) : selectedTotemId;
+
+      if (confirm(`Tem certeza que deseja apagar o totem "${name}" permanentemente?`)) {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            type: "delete_totem",
+            totemId: selectedTotemId
+          }));
+        }
+        
+        delete totens[selectedTotemId];
+        resetSelection();
+      }
     };
 
     window.addEventListener("DOMContentLoaded", connectWebSocket);
