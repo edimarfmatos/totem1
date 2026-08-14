@@ -87,7 +87,6 @@ function notifyAdminTotemList() {
 
 // Servidor HTTP para servir arquivos estáticos e Rotas API
 const server = http.createServer((req, res) => {
-  // Suporte a API HTTP para consulta de dados salvos
   if (req.url === '/api/totems' || req.url === '/api/dados') {
     res.writeHead(200, { 
       'Content-Type': 'application/json; charset=utf-8',
@@ -192,12 +191,15 @@ wss.on('connection', (ws) => {
 
           const existingTotem = totems[clientId] || {};
 
+          // REGRA DE OURO: Dá prioridade absoluta ao nome já gravado no banco de dados!
+          const definedName = existingTotem.name || existingTotem.storeName || data.storeName || 'Novo Totem';
+
           totems[clientId] = {
             ...existingTotem,
             id: clientId,
             ws: ws,
-            name: existingTotem.name || existingTotem.storeName || data.storeName || 'Novo Totem',
-            storeName: existingTotem.storeName || existingTotem.name || data.storeName || 'Novo Totem',
+            name: definedName,
+            storeName: definedName,
             configured: true,
             online: true,
             orientation: existingTotem.orientation || data.orientation || 'portrait',
@@ -212,14 +214,14 @@ wss.on('connection', (ws) => {
 
           saveDatabase();
 
-          // Responde ao totem confirmando seu ID e enviando o estado completo
+          // Responde ao totem confirmando seu ID e enviando o estado salvo
           ws.send(JSON.stringify({
             type: 'totem_registered',
             totemId: clientId,
             state: totems[clientId]
           }));
 
-          // Restaura na tela do totem as mídias e comandos salvos
+          // Se existirem comandos gravados (mídia, texto, etc.), reenvia para o totem
           if (totems[clientId].lastCommands) {
             Object.values(totems[clientId].lastCommands).forEach((cmdData) => {
               if (ws.readyState === WebSocket.OPEN) {
@@ -236,7 +238,7 @@ wss.on('connection', (ws) => {
           if (clientType === 'admin' && totems[data.totemId]) {
             const targetTotem = totems[data.totemId];
 
-            // Atualiza os dados no cadastro do totem
+            // Se o admin editou o nome, atualiza no objeto
             if (data.name) {
               targetTotem.name = data.name;
               targetTotem.storeName = data.name;
@@ -253,18 +255,32 @@ wss.on('connection', (ws) => {
               targetTotem.tickerIcon = data.tickerIcon || '';
             }
 
-            // Guarda histórico dos últimos comandos
             const commandKey = data.command || data.action || (data.mediaUrl !== undefined ? 'media' : data.tickerText !== undefined ? 'ticker' : data.orientation ? 'orientation' : 'name');
             targetTotem.lastCommands[commandKey] = data;
 
-            // Salva as alterações no arquivo de banco de dados imediatamente
+            // Grava no arquivo no mesmo instante
             saveDatabase();
 
-            // Envia o comando em tempo real se o totem estiver online
             if (targetTotem.ws && targetTotem.ws.readyState === WebSocket.OPEN) {
               targetTotem.ws.send(JSON.stringify(data));
               console.log(`Comando enviado para o totem: ${data.totemId}`);
             }
+
+            notifyAdminTotemList();
+          }
+          break;
+
+        /* 4. EXCLUIR TOTEM DO BANCO DE DADOS */
+        case 'delete_totem':
+          if (clientType === 'admin' && totems[data.totemId]) {
+            console.log(`Totem removido pelo admin: ${data.totemId}`);
+            
+            if (totems[data.totemId].ws) {
+              totems[data.totemId].ws.close();
+            }
+
+            delete totems[data.totemId];
+            saveDatabase();
 
             notifyAdminTotemList();
           }
