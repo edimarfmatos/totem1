@@ -153,6 +153,10 @@
     let socket;
     let pingInterval;
 
+    // Controle de Playlist
+    let playlist = [];
+    let currentPlaylistIndex = 0;
+
     // Estado local mantido
     let currentConfig = {
       orientation: "portrait",
@@ -236,9 +240,53 @@
       };
     }
 
+    function playCurrentMedia() {
+      const mediaDisplay = document.getElementById("media-display");
+      if (playlist.length === 0) return;
+
+      const currentUrl = playlist[currentPlaylistIndex];
+      const type = currentConfig.mediaType || "image";
+
+      if (type === "video") {
+        let video = mediaDisplay.querySelector("video");
+        
+        if (!video) {
+          mediaDisplay.innerHTML = `<video id="active-video" autoplay muted playsinline></video>`;
+          video = document.getElementById("active-video");
+        }
+
+        video.src = currentUrl;
+
+        // Ao terminar o vídeo atual, avança para o próximo da playlist
+        video.onended = () => {
+          if (playlist.length > 0) {
+            currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
+            playCurrentMedia();
+          }
+        };
+
+        // Tratamento para caso algum vídeo falhe/quebre
+        video.onerror = () => {
+          console.error("Erro ao carregar o vídeo:", currentUrl);
+          if (playlist.length > 1) {
+            setTimeout(() => {
+              currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
+              playCurrentMedia();
+            }, 3000);
+          }
+        };
+
+        video.play().catch(e => console.warn("Autoplay impedido pelo navegador:", e));
+
+      } else if (type === "iframe") {
+        mediaDisplay.innerHTML = `<iframe src="${currentUrl}"></iframe>`;
+      } else {
+        mediaDisplay.innerHTML = `<img src="${currentUrl}" alt="Mídia Totem">`;
+      }
+    }
+
     function applyDisplayState(data) {
       const container = document.getElementById("app-container");
-      const mediaDisplay = document.getElementById("media-display");
       const tickerText = document.getElementById("ticker-text");
 
       // 1. Orientação
@@ -251,25 +299,21 @@
         }
       }
 
-      // 2. Mídia
-      if (data.mediaUrl) {
+      // 2. Mídia / Playlist
+      if (data.mediaUrl !== undefined) {
         currentConfig.mediaUrl = data.mediaUrl;
         currentConfig.mediaType = data.mediaType || "image";
 
-        // Limpa mídia anterior para liberar memória
-        const existingVideo = mediaDisplay.querySelector("video");
-        if (existingVideo) {
-          existingVideo.pause();
-          existingVideo.src = "";
-        }
+        // Divide o texto por quebras de linha (\n) ou vírgulas
+        const newPlaylist = data.mediaUrl
+          .split(/[\n,]+/)
+          .map(u => u.trim())
+          .filter(u => u.length > 0);
 
-        if (data.mediaType === "video") {
-          mediaDisplay.innerHTML = `<video src="${data.mediaUrl}" autoplay loop muted playsinline></video>`;
-        } else if (data.mediaType === "iframe") {
-          mediaDisplay.innerHTML = `<iframe src="${data.mediaUrl}"></iframe>`;
-        } else {
-          mediaDisplay.innerHTML = `<img src="${data.mediaUrl}" alt="Mídia Totem">`;
-        }
+        playlist = newPlaylist.length > 0 ? newPlaylist : ["https://via.placeholder.com/1080x1920?text=Sem+Midia"];
+        currentPlaylistIndex = 0;
+
+        playCurrentMedia();
       }
 
       // 3. Letreiro
