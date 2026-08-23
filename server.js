@@ -1,53 +1,57 @@
 const WebSocket = require('ws');
 const http = require('http');
-const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 8080;
-const DB_FILE = path.join(__dirname, 'totems_db.json');
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDHH9STm6mvXbcVPz9ntExC_uaI5IojfYGw6MRv5J8ays6hbJXRa_rKItE2__Mn7nq/exec";
 
 // Armazenamento do estado dos Totens e Administradores
 const totems = {};
 const adminSockets = new Set();
 
 /* =========================================================
-   SISTEMA DE PERSISTÊNCIA EM ARQUIVO (BANCO DE DADOS LOCAL)
+   SISTEMA DE PERSISTÊNCIA VIA GOOGLE APPS SCRIPT (DRIVE)
 ========================================================= */
-function loadDatabase() {
-  if (fs.existsSync(DB_FILE)) {
-    try {
-      const data = fs.readFileSync(DB_FILE, 'utf8');
-      const savedTotems = JSON.parse(data);
-      
-      Object.keys(savedTotems).forEach((id) => {
-        totems[id] = {
-          ...savedTotems[id],
-          online: false, // Inicia offline até conectar
-          ws: null
-        };
-      });
-      console.log('Banco de dados carregado: Totens restaurados com sucesso.');
-    } catch (e) {
-      console.error('Erro ao ler banco de dados local:', e);
-    }
-  }
-}
-
-function saveDatabase() {
+async function loadDatabase() {
   try {
-    const dataToSave = {};
-    Object.keys(totems).forEach((id) => {
-      // Removemos a conexão WebSocket (ws) para salvar apenas os dados
-      const { ws, online, ...rest } = totems[id];
-      dataToSave[id] = rest;
+    const response = await fetch(APPS_SCRIPT_URL);
+    const data = await response.json();
+    const savedTotems = data.totens || {};
+
+    Object.keys(savedTotems).forEach((id) => {
+      totems[id] = {
+        ...savedTotems[id],
+        online: false, // Inicia offline até conectar
+        ws: null
+      };
     });
-    fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2), 'utf8');
+    console.log('Banco de dados remoto (Google Drive) carregado com sucesso.');
   } catch (e) {
-    console.error('Erro ao salvar banco de dados local:', e);
+    console.error('Erro ao ler banco de dados no Google Drive:', e);
   }
 }
 
-// Carrega os dados salvos assim que o servidor inicia
+async function saveDatabase() {
+  try {
+    const dataToSave = { totens: {} };
+    Object.keys(totems).forEach((id) => {
+      // Removemos a conexão WebSocket (ws) para salvar apenas os dados do totem
+      const { ws, online, ...rest } = totems[id];
+      dataToSave.totens[id] = rest;
+    });
+
+    await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(dataToSave)
+    });
+    console.log('Dados sincronizados com o Google Drive.');
+  } catch (e) {
+    console.error('Erro ao salvar no Google Drive:', e);
+  }
+}
+
+// Carrega os dados do Drive assim que o servidor inicia
 loadDatabase();
 
 function generateUniqueId() {
@@ -119,6 +123,7 @@ const server = http.createServer((req, res) => {
 
   const contentType = mimeTypes[extname] || 'text/html';
 
+  const fs = require('fs');
   fs.readFile(filePath, (error, content) => {
     if (error) {
       if (error.code === 'ENOENT') {
@@ -191,7 +196,6 @@ wss.on('connection', (ws) => {
 
           const existingTotem = totems[clientId] || {};
 
-          // REGRA DE OURO: Dá prioridade absoluta ao nome já gravado no banco de dados!
           const definedName = existingTotem.name || existingTotem.storeName || data.storeName || 'Novo Totem';
 
           totems[clientId] = {
@@ -214,14 +218,12 @@ wss.on('connection', (ws) => {
 
           saveDatabase();
 
-          // Responde ao totem confirmando seu ID e enviando o estado salvo
           ws.send(JSON.stringify({
             type: 'totem_registered',
             totemId: clientId,
             state: totems[clientId]
           }));
 
-          // Se existirem comandos gravados (mídia, texto, etc.), reenvia para o totem
           if (totems[clientId].lastCommands) {
             Object.values(totems[clientId].lastCommands).forEach((cmdData) => {
               if (ws.readyState === WebSocket.OPEN) {
@@ -238,7 +240,6 @@ wss.on('connection', (ws) => {
           if (clientType === 'admin' && totems[data.totemId]) {
             const targetTotem = totems[data.totemId];
 
-            // Se o admin editou o nome, atualiza no objeto
             if (data.name) {
               targetTotem.name = data.name;
               targetTotem.storeName = data.name;
@@ -258,7 +259,6 @@ wss.on('connection', (ws) => {
             const commandKey = data.command || data.action || (data.mediaUrl !== undefined ? 'media' : data.tickerText !== undefined ? 'ticker' : data.orientation ? 'orientation' : 'name');
             targetTotem.lastCommands[commandKey] = data;
 
-            // Grava no arquivo no mesmo instante
             saveDatabase();
 
             if (targetTotem.ws && targetTotem.ws.readyState === WebSocket.OPEN) {
@@ -314,6 +314,6 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`===================================================`);
   console.log(` Servidor Totem Mídia rodando na porta: ${PORT}`);
-  console.log(` Banco de dados local ativo!`);
+  console.log(` Banco de dados remoto (Google Drive) ativo!`);
   console.log(`===================================================`);
 });
