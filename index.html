@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -18,6 +20,9 @@
       background-color: #000;
       font-family: Arial, sans-serif;
       user-select: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
 
     #app-container {
@@ -26,13 +31,25 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      transition: transform 0.3s ease;
+      transition: all 0.3s ease;
       position: relative;
     }
 
+    /* FORÇAR VERTICAL EM TELAS HORIZONTAIS DE COMPUTADOR (Modo Padrão) */
+    @media (min-width: 768px) and (orientation: landscape) {
+      #app-container {
+        width: 100vh;
+        height: 100vw;
+        transform: rotate(-90deg);
+        transform-origin: center center;
+      }
+    }
+
+    /* Classe para alterar orientação via comandos do admin */
     .landscape {
-      transform: rotate(90deg);
-      transform-origin: center center;
+      transform: rotate(0deg) !important;
+      width: 100vw !important;
+      height: 100vh !important;
     }
 
     /* Indicador visual de Conexão no Totem */
@@ -69,7 +86,7 @@
     #media-display {
       flex: 1;
       width: 100%;
-      height: calc(100vh - 60px);
+      height: calc(100% - 60px);
       display: flex;
       justify-content: center;
       align-items: center;
@@ -257,7 +274,6 @@
 
         video.src = currentUrl;
 
-        // Ao terminar o vídeo atual, avança para o próximo da playlist
         video.onended = () => {
           if (playlist.length > 0) {
             currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
@@ -265,7 +281,6 @@
           }
         };
 
-        // Tratamento para caso algum vídeo falhe/quebre
         video.onerror = () => {
           console.error("Erro ao carregar o vídeo:", currentUrl);
           if (playlist.length > 1) {
@@ -304,7 +319,6 @@
         currentConfig.mediaUrl = data.mediaUrl;
         currentConfig.mediaType = data.mediaType || "image";
 
-        // Divide o texto por quebras de linha (\n) ou vírgulas
         const newPlaylist = data.mediaUrl
           .split(/[\n,]+/)
           .map(u => u.trim())
@@ -349,3 +363,8 @@
   </script>
 </body>
 </html>
+
+
+
+
+
