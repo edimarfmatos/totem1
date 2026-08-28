@@ -18,6 +18,9 @@
       background-color: #000;
       font-family: Arial, sans-serif;
       user-select: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
 
     #app-container {
@@ -26,13 +29,23 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      transition: transform 0.3s ease;
+      transition: transform 0.3s ease, width 0.3s ease, height 0.3s ease;
       position: relative;
     }
 
-    .landscape {
-      transform: rotate(90deg);
+    /* MODO RETRATO FORÇADO (Padrão para telas horizontais de PC) */
+    .portrait-forced {
+      width: 100vh !important;
+      height: 100vw !important;
+      transform: rotate(-90deg);
       transform-origin: center center;
+    }
+
+    /* MODO PAISAGEM / LANDSCAPE (Quando ativado via Painel Admin) */
+    .landscape {
+      transform: rotate(0deg) !important;
+      width: 100vw !important;
+      height: 100vh !important;
     }
 
     /* Indicador visual de Conexão no Totem */
@@ -69,7 +82,7 @@
     #media-display {
       flex: 1;
       width: 100%;
-      height: calc(100vh - 60px);
+      height: calc(100% - 60px);
       display: flex;
       justify-content: center;
       align-items: center;
@@ -86,6 +99,7 @@
       border: none;
     }
 
+    /* LETREIRO DO RODAPÉ */
     #footer-ticker {
       height: 60px;
       width: 100%;
@@ -124,7 +138,6 @@
 <body>
 
   <div id="app-container">
-    <!-- Indicador de Status On-line / Off-line -->
     <div id="connection-status">
       <span class="status-dot offline" id="status-dot"></span>
       <span id="status-text">Offline</span>
@@ -152,6 +165,7 @@
 
     let socket;
     let pingInterval;
+    let imageTimer = null;
 
     // Controle de Playlist
     let playlist = [];
@@ -244,6 +258,8 @@
       const mediaDisplay = document.getElementById("media-display");
       if (playlist.length === 0) return;
 
+      if (imageTimer) clearTimeout(imageTimer);
+
       const currentUrl = playlist[currentPlaylistIndex];
       const type = currentConfig.mediaType || "image";
 
@@ -257,7 +273,6 @@
 
         video.src = currentUrl;
 
-        // Ao terminar o vídeo atual, avança para o próximo da playlist
         video.onended = () => {
           if (playlist.length > 0) {
             currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
@@ -265,7 +280,6 @@
           }
         };
 
-        // Tratamento para caso algum vídeo falhe/quebre
         video.onerror = () => {
           console.error("Erro ao carregar o vídeo:", currentUrl);
           if (playlist.length > 1) {
@@ -281,7 +295,16 @@
       } else if (type === "iframe") {
         mediaDisplay.innerHTML = `<iframe src="${currentUrl}"></iframe>`;
       } else {
+        // Imagem / Playlist de Imagens
         mediaDisplay.innerHTML = `<img src="${currentUrl}" alt="Mídia Totem">`;
+        
+        // Se houver mais de uma imagem na playlist, rotaciona a cada 10 segundos
+        if (playlist.length > 1) {
+          imageTimer = setTimeout(() => {
+            currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
+            playCurrentMedia();
+          }, 10000);
+        }
       }
     }
 
@@ -289,13 +312,22 @@
       const container = document.getElementById("app-container");
       const tickerText = document.getElementById("ticker-text");
 
-      // 1. Orientação
+      // 1. Orientação Dinâmica (Retrato vs Paisagem)
       if (data.orientation) {
         currentConfig.orientation = data.orientation;
+        const isLandscapeScreen = window.innerWidth > window.innerHeight;
+
         if (data.orientation === "landscape") {
+          container.classList.remove("portrait-forced");
           container.classList.add("landscape");
         } else {
           container.classList.remove("landscape");
+          // Se for tela de monitor deitado (PC), força o modo retrato virado
+          if (isLandscapeScreen) {
+            container.classList.add("portrait-forced");
+          } else {
+            container.classList.remove("portrait-forced");
+          }
         }
       }
 
@@ -304,7 +336,6 @@
         currentConfig.mediaUrl = data.mediaUrl;
         currentConfig.mediaType = data.mediaType || "image";
 
-        // Divide o texto por quebras de linha (\n) ou vírgulas
         const newPlaylist = data.mediaUrl
           .split(/[\n,]+/)
           .map(u => u.trim())
@@ -316,7 +347,7 @@
         playCurrentMedia();
       }
 
-      // 3. Letreiro
+      // 3. Letreiro Rodapé
       if (data.tickerText !== undefined) {
         currentConfig.tickerText = data.tickerText;
         currentConfig.tickerIcon = data.tickerIcon || "";
@@ -345,6 +376,11 @@
     window.addEventListener("DOMContentLoaded", () => {
       loadStateFromLocalStorage();
       connectWebSocket();
+    });
+
+    // Reavalia rotação caso a janela mude de tamanho
+    window.addEventListener("resize", () => {
+      applyDisplayState(currentConfig);
     });
   </script>
 </body>
