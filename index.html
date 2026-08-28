@@ -48,7 +48,7 @@
       height: 100vh !important;
     }
 
-    /* Indicador visual de Conexão no Totem */
+    /* Indicador visual de Conexão */
     #connection-status {
       position: absolute;
       top: 15px;
@@ -166,7 +166,7 @@
 
     let socket;
     let pingInterval;
-    let imageTimer = null;
+    let playlistTimer = null;
 
     let playlist = [];
     let currentPlaylistIndex = 0;
@@ -253,62 +253,6 @@
       };
     }
 
-    function playCurrentMedia() {
-      const mediaDisplay = document.getElementById("media-display");
-      if (playlist.length === 0) return;
-
-      if (imageTimer) clearTimeout(imageTimer);
-
-      const currentUrl = playlist[currentPlaylistIndex];
-      const type = currentConfig.mediaType || "image";
-
-      if (type === "video") {
-        mediaDisplay.innerHTML = `
-          <video id="active-video" autoplay muted playsinline preload="auto" crossorigin="anonymous">
-            <source src="${currentUrl}" type="video/mp4">
-            Seu navegador não suporta a exibição deste vídeo.
-          </video>`;
-
-        const video = document.getElementById("active-video");
-
-        // Tenta reprodução imediata
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(err => {
-            console.warn("Autoplay impedido ou falhou na tentativa inicial:", err);
-            // Tenta forçar play mudo sem crossOrigin se for bloqueio de CORS
-            video.removeAttribute("crossorigin");
-            video.play().catch(e => console.error("Falha fatal ao tocar vídeo:", e));
-          });
-        }
-
-        // Evento de fim de vídeo -> Próximo da Playlist
-        video.onended = () => {
-          nextPlaylistItem();
-        };
-
-        // Tratamento de Erro de Vídeo -> Avança sem travar a tela
-        video.onerror = (e) => {
-          console.error("Erro ao carregar URL do vídeo:", currentUrl, e);
-          setTimeout(() => {
-            nextPlaylistItem();
-          }, 3000);
-        };
-
-      } else if (type === "iframe") {
-        mediaDisplay.innerHTML = `<iframe src="${currentUrl}"></iframe>`;
-      } else {
-        // Imagem / Playlist de Imagens (10 segundos por imagem)
-        mediaDisplay.innerHTML = `<img src="${currentUrl}" alt="Mídia Totem">`;
-        
-        if (playlist.length > 1) {
-          imageTimer = setTimeout(() => {
-            nextPlaylistItem();
-          }, 10000);
-        }
-      }
-    }
-
     function nextPlaylistItem() {
       if (playlist.length > 0) {
         currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
@@ -316,11 +260,76 @@
       }
     }
 
+    function playCurrentMedia() {
+      const mediaDisplay = document.getElementById("media-display");
+      if (playlist.length === 0) return;
+
+      if (playlistTimer) clearTimeout(playlistTimer);
+
+      const currentUrl = playlist[currentPlaylistIndex];
+      const type = currentConfig.mediaType || "image";
+
+      if (type === "video") {
+        // Limpa a div para recriar o player sem vestígios do vídeo anterior
+        mediaDisplay.innerHTML = "";
+
+        const video = document.createElement("video");
+        video.id = "active-video";
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = "auto";
+        video.src = currentUrl;
+
+        mediaDisplay.appendChild(video);
+
+        // Quando o vídeo termina normalmente, passa para o próximo
+        video.onended = () => {
+          nextPlaylistItem();
+        };
+
+        // Tratamento de erro caso o link do vídeo falhe/esteja quebrado
+        video.onerror = (e) => {
+          console.error("Erro ao carregar o vídeo:", currentUrl, e);
+          playlistTimer = setTimeout(() => {
+            nextPlaylistItem();
+          }, 3000);
+        };
+
+        // Força a reprodução
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(err => {
+            console.warn("Autoplay impedido pelo navegador. Tentando forçar...", err);
+            video.muted = true;
+            video.play().catch(() => {
+              // Se ainda assim não der play, pula após 3 segundos para não travar a playlist
+              playlistTimer = setTimeout(() => {
+                nextPlaylistItem();
+              }, 3000);
+            });
+          });
+        }
+
+      } else if (type === "iframe") {
+        mediaDisplay.innerHTML = `<iframe src="${currentUrl}"></iframe>`;
+      } else {
+        // Mídia tipo Imagem (troca a cada 10 segundos na playlist)
+        mediaDisplay.innerHTML = `<img src="${currentUrl}" alt="Mídia Totem">`;
+        
+        if (playlist.length > 1) {
+          playlistTimer = setTimeout(() => {
+            nextPlaylistItem();
+          }, 10000);
+        }
+      }
+    }
+
     function applyDisplayState(data) {
       const container = document.getElementById("app-container");
       const tickerText = document.getElementById("ticker-text");
 
-      // 1. Orientação Dinâmica (Retrato / Paisagem)
+      // 1. Orientação Dinâmica
       if (data.orientation) {
         currentConfig.orientation = data.orientation;
         const isLandscapeScreen = window.innerWidth > window.innerHeight;
@@ -338,11 +347,12 @@
         }
       }
 
-      // 2. Mídia / Playlist (Processa quebras de linha ou vírgulas)
+      // 2. Mídia e Playlist
       if (data.mediaUrl !== undefined) {
         currentConfig.mediaUrl = data.mediaUrl;
         currentConfig.mediaType = data.mediaType || "image";
 
+        // Trata quebras de linha (\n) ou vírgulas
         const newPlaylist = data.mediaUrl
           .split(/[\n,]+/)
           .map(u => u.trim())
