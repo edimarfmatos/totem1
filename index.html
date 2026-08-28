@@ -18,6 +18,9 @@
       background-color: #000;
       font-family: Arial, sans-serif;
       user-select: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
 
     #app-container {
@@ -26,13 +29,23 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      transition: transform 0.3s ease;
+      transition: transform 0.3s ease, width 0.3s ease, height 0.3s ease;
       position: relative;
     }
 
-    .landscape {
-      transform: rotate(90deg);
+    /* MODO RETRATO FORÇADO (Para telas horizontais de PC) */
+    .portrait-forced {
+      width: 100vh !important;
+      height: 100vw !important;
+      transform: rotate(-90deg);
       transform-origin: center center;
+    }
+
+    /* MODO PAISAGEM / LANDSCAPE (Quando ativado via Admin) */
+    .landscape {
+      transform: rotate(0deg) !important;
+      width: 100vw !important;
+      height: 100vh !important;
     }
 
     /* Indicador visual de Conexão no Totem */
@@ -69,12 +82,13 @@
     #media-display {
       flex: 1;
       width: 100%;
-      height: calc(100vh - 60px);
+      height: calc(100% - 60px);
       display: flex;
       justify-content: center;
       align-items: center;
       overflow: hidden;
       position: relative;
+      background-color: #000;
     }
 
     #media-display img, 
@@ -86,6 +100,7 @@
       border: none;
     }
 
+    /* LETREIRO DO RODAPÉ */
     #footer-ticker {
       height: 60px;
       width: 100%;
@@ -124,7 +139,6 @@
 <body>
 
   <div id="app-container">
-    <!-- Indicador de Status On-line / Off-line -->
     <div id="connection-status">
       <span class="status-dot offline" id="status-dot"></span>
       <span id="status-text">Offline</span>
@@ -152,12 +166,11 @@
 
     let socket;
     let pingInterval;
+    let imageTimer = null;
 
-    // Controle de Playlist
     let playlist = [];
     let currentPlaylistIndex = 0;
 
-    // Estado local mantido
     let currentConfig = {
       orientation: "portrait",
       mediaType: "image",
@@ -244,44 +257,62 @@
       const mediaDisplay = document.getElementById("media-display");
       if (playlist.length === 0) return;
 
+      if (imageTimer) clearTimeout(imageTimer);
+
       const currentUrl = playlist[currentPlaylistIndex];
       const type = currentConfig.mediaType || "image";
 
       if (type === "video") {
-        let video = mediaDisplay.querySelector("video");
-        
-        if (!video) {
-          mediaDisplay.innerHTML = `<video id="active-video" autoplay muted playsinline></video>`;
-          video = document.getElementById("active-video");
+        mediaDisplay.innerHTML = `
+          <video id="active-video" autoplay muted playsinline preload="auto" crossorigin="anonymous">
+            <source src="${currentUrl}" type="video/mp4">
+            Seu navegador não suporta a exibição deste vídeo.
+          </video>`;
+
+        const video = document.getElementById("active-video");
+
+        // Tenta reprodução imediata
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(err => {
+            console.warn("Autoplay impedido ou falhou na tentativa inicial:", err);
+            // Tenta forçar play mudo sem crossOrigin se for bloqueio de CORS
+            video.removeAttribute("crossorigin");
+            video.play().catch(e => console.error("Falha fatal ao tocar vídeo:", e));
+          });
         }
 
-        video.src = currentUrl;
-
-        // Ao terminar o vídeo atual, avança para o próximo da playlist
+        // Evento de fim de vídeo -> Próximo da Playlist
         video.onended = () => {
-          if (playlist.length > 0) {
-            currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
-            playCurrentMedia();
-          }
+          nextPlaylistItem();
         };
 
-        // Tratamento para caso algum vídeo falhe/quebre
-        video.onerror = () => {
-          console.error("Erro ao carregar o vídeo:", currentUrl);
-          if (playlist.length > 1) {
-            setTimeout(() => {
-              currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
-              playCurrentMedia();
-            }, 3000);
-          }
+        // Tratamento de Erro de Vídeo -> Avança sem travar a tela
+        video.onerror = (e) => {
+          console.error("Erro ao carregar URL do vídeo:", currentUrl, e);
+          setTimeout(() => {
+            nextPlaylistItem();
+          }, 3000);
         };
-
-        video.play().catch(e => console.warn("Autoplay impedido pelo navegador:", e));
 
       } else if (type === "iframe") {
         mediaDisplay.innerHTML = `<iframe src="${currentUrl}"></iframe>`;
       } else {
+        // Imagem / Playlist de Imagens (10 segundos por imagem)
         mediaDisplay.innerHTML = `<img src="${currentUrl}" alt="Mídia Totem">`;
+        
+        if (playlist.length > 1) {
+          imageTimer = setTimeout(() => {
+            nextPlaylistItem();
+          }, 10000);
+        }
+      }
+    }
+
+    function nextPlaylistItem() {
+      if (playlist.length > 0) {
+        currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
+        playCurrentMedia();
       }
     }
 
@@ -289,22 +320,29 @@
       const container = document.getElementById("app-container");
       const tickerText = document.getElementById("ticker-text");
 
-      // 1. Orientação
+      // 1. Orientação Dinâmica (Retrato / Paisagem)
       if (data.orientation) {
         currentConfig.orientation = data.orientation;
+        const isLandscapeScreen = window.innerWidth > window.innerHeight;
+
         if (data.orientation === "landscape") {
+          container.classList.remove("portrait-forced");
           container.classList.add("landscape");
         } else {
           container.classList.remove("landscape");
+          if (isLandscapeScreen) {
+            container.classList.add("portrait-forced");
+          } else {
+            container.classList.remove("portrait-forced");
+          }
         }
       }
 
-      // 2. Mídia / Playlist
+      // 2. Mídia / Playlist (Processa quebras de linha ou vírgulas)
       if (data.mediaUrl !== undefined) {
         currentConfig.mediaUrl = data.mediaUrl;
         currentConfig.mediaType = data.mediaType || "image";
 
-        // Divide o texto por quebras de linha (\n) ou vírgulas
         const newPlaylist = data.mediaUrl
           .split(/[\n,]+/)
           .map(u => u.trim())
@@ -316,7 +354,7 @@
         playCurrentMedia();
       }
 
-      // 3. Letreiro
+      // 3. Letreiro Rodapé
       if (data.tickerText !== undefined) {
         currentConfig.tickerText = data.tickerText;
         currentConfig.tickerIcon = data.tickerIcon || "";
@@ -345,6 +383,10 @@
     window.addEventListener("DOMContentLoaded", () => {
       loadStateFromLocalStorage();
       connectWebSocket();
+    });
+
+    window.addEventListener("resize", () => {
+      applyDisplayState(currentConfig);
     });
   </script>
 </body>
