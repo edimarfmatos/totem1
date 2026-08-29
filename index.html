@@ -29,26 +29,28 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      transition: transform 0.3s ease, width 0.3s ease, height 0.3s ease;
+      transition: all 0.3s ease;
       position: relative;
     }
 
-    /* MODO RETRATO FORÇADO (Para telas horizontais de PC) */
-    .portrait-forced {
-      width: 100vh !important;
-      height: 100vw !important;
-      transform: rotate(-90deg);
-      transform-origin: center center;
+    /* FORÇAR VERTICAL EM TELAS HORIZONTAIS DE COMPUTADOR (Modo Padrão) */
+    @media (min-width: 768px) and (orientation: landscape) {
+      #app-container {
+        width: 100vh;
+        height: 100vw;
+        transform: rotate(-90deg);
+        transform-origin: center center;
+      }
     }
 
-    /* MODO PAISAGEM / LANDSCAPE (Quando ativado via Admin) */
+    /* Classe para alterar orientação via comandos do admin */
     .landscape {
       transform: rotate(0deg) !important;
       width: 100vw !important;
       height: 100vh !important;
     }
 
-    /* Indicador visual de Conexão */
+    /* Indicador visual de Conexão no Totem */
     #connection-status {
       position: absolute;
       top: 15px;
@@ -88,7 +90,6 @@
       align-items: center;
       overflow: hidden;
       position: relative;
-      background-color: #000;
     }
 
     #media-display img, 
@@ -100,7 +101,6 @@
       border: none;
     }
 
-    /* LETREIRO DO RODAPÉ */
     #footer-ticker {
       height: 60px;
       width: 100%;
@@ -139,6 +139,7 @@
 <body>
 
   <div id="app-container">
+    <!-- Indicador de Status On-line / Off-line -->
     <div id="connection-status">
       <span class="status-dot offline" id="status-dot"></span>
       <span id="status-text">Offline</span>
@@ -166,11 +167,12 @@
 
     let socket;
     let pingInterval;
-    let playlistTimer = null;
 
+    // Controle de Playlist
     let playlist = [];
     let currentPlaylistIndex = 0;
 
+    // Estado local mantido
     let currentConfig = {
       orientation: "portrait",
       mediaType: "image",
@@ -253,75 +255,46 @@
       };
     }
 
-    function nextPlaylistItem() {
-      if (playlist.length > 0) {
-        currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
-        playCurrentMedia();
-      }
-    }
-
     function playCurrentMedia() {
       const mediaDisplay = document.getElementById("media-display");
       if (playlist.length === 0) return;
-
-      if (playlistTimer) clearTimeout(playlistTimer);
 
       const currentUrl = playlist[currentPlaylistIndex];
       const type = currentConfig.mediaType || "image";
 
       if (type === "video") {
-        // Limpa a div para recriar o player sem vestígios do vídeo anterior
-        mediaDisplay.innerHTML = "";
+        let video = mediaDisplay.querySelector("video");
+        
+        if (!video) {
+          mediaDisplay.innerHTML = `<video id="active-video" autoplay muted playsinline></video>`;
+          video = document.getElementById("active-video");
+        }
 
-        const video = document.createElement("video");
-        video.id = "active-video";
-        video.autoplay = true;
-        video.muted = true;
-        video.playsInline = true;
-        video.preload = "auto";
         video.src = currentUrl;
 
-        mediaDisplay.appendChild(video);
-
-        // Quando o vídeo termina normalmente, passa para o próximo
         video.onended = () => {
-          nextPlaylistItem();
+          if (playlist.length > 0) {
+            currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
+            playCurrentMedia();
+          }
         };
 
-        // Tratamento de erro caso o link do vídeo falhe/esteja quebrado
-        video.onerror = (e) => {
-          console.error("Erro ao carregar o vídeo:", currentUrl, e);
-          playlistTimer = setTimeout(() => {
-            nextPlaylistItem();
-          }, 3000);
+        video.onerror = () => {
+          console.error("Erro ao carregar o vídeo:", currentUrl);
+          if (playlist.length > 1) {
+            setTimeout(() => {
+              currentPlaylistIndex = (currentPlaylistIndex + 1) % playlist.length;
+              playCurrentMedia();
+            }, 3000);
+          }
         };
 
-        // Força a reprodução
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(err => {
-            console.warn("Autoplay impedido pelo navegador. Tentando forçar...", err);
-            video.muted = true;
-            video.play().catch(() => {
-              // Se ainda assim não der play, pula após 3 segundos para não travar a playlist
-              playlistTimer = setTimeout(() => {
-                nextPlaylistItem();
-              }, 3000);
-            });
-          });
-        }
+        video.play().catch(e => console.warn("Autoplay impedido pelo navegador:", e));
 
       } else if (type === "iframe") {
         mediaDisplay.innerHTML = `<iframe src="${currentUrl}"></iframe>`;
       } else {
-        // Mídia tipo Imagem (troca a cada 10 segundos na playlist)
         mediaDisplay.innerHTML = `<img src="${currentUrl}" alt="Mídia Totem">`;
-        
-        if (playlist.length > 1) {
-          playlistTimer = setTimeout(() => {
-            nextPlaylistItem();
-          }, 10000);
-        }
       }
     }
 
@@ -329,30 +302,21 @@
       const container = document.getElementById("app-container");
       const tickerText = document.getElementById("ticker-text");
 
-      // 1. Orientação Dinâmica
+      // 1. Orientação
       if (data.orientation) {
         currentConfig.orientation = data.orientation;
-        const isLandscapeScreen = window.innerWidth > window.innerHeight;
-
         if (data.orientation === "landscape") {
-          container.classList.remove("portrait-forced");
           container.classList.add("landscape");
         } else {
           container.classList.remove("landscape");
-          if (isLandscapeScreen) {
-            container.classList.add("portrait-forced");
-          } else {
-            container.classList.remove("portrait-forced");
-          }
         }
       }
 
-      // 2. Mídia e Playlist
+      // 2. Mídia / Playlist
       if (data.mediaUrl !== undefined) {
         currentConfig.mediaUrl = data.mediaUrl;
         currentConfig.mediaType = data.mediaType || "image";
 
-        // Trata quebras de linha (\n) ou vírgulas
         const newPlaylist = data.mediaUrl
           .split(/[\n,]+/)
           .map(u => u.trim())
@@ -364,7 +328,7 @@
         playCurrentMedia();
       }
 
-      // 3. Letreiro Rodapé
+      // 3. Letreiro
       if (data.tickerText !== undefined) {
         currentConfig.tickerText = data.tickerText;
         currentConfig.tickerIcon = data.tickerIcon || "";
@@ -393,10 +357,6 @@
     window.addEventListener("DOMContentLoaded", () => {
       loadStateFromLocalStorage();
       connectWebSocket();
-    });
-
-    window.addEventListener("resize", () => {
-      applyDisplayState(currentConfig);
     });
   </script>
 </body>
